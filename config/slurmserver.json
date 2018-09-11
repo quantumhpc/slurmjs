@@ -1,0 +1,18 @@
+{
+        "method"                : "ssh",
+        "sshExec"               : "/usr/bin/ssh",
+        "defaultOpts"           : "-o StrictHostKeyChecking=no",
+        "scpExec"               : "/usr/bin/scp",
+        "username"              : "user",
+        "uid"                   : "10000",
+        "gid"                   : "10000",
+        "serverName"            : "slurmserver",
+        "secretAccessKey"       : "/home/user/.ssh/id_rsa",
+        "localShell"            : "/bin/sh",
+        "localCopy"             : "/bin/cp",
+        "binariesDir"           : "/usr/local/bin/",
+        "useSharedDir"          : false,
+        "sharedDir"             : "/localMount",
+        "workingDir"            : "/tmp",
+        "permissions"           : 700
+}

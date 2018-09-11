@@ -1,0 +1,26 @@
+{
+  "name": "slurmjs",
+  "version": "1.0.0",
+  "description": "Nodejs module to interact with a Slurm scheduler",
+  "main": "slurmjs.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quantumhpc/slurmjs.git"
+  },
+  "keywords": [
+    "hpc",
+    "scheduler",
+    "slurm",
+    "job",
+    "cluster"
+  ],
+  "author": "Quantum HPC Inc.",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/quantumhpc/slurmjs/issues"
+  },
+  "homepage": "https://github.com/quantumhpc/slurmjs#readme"
+}
