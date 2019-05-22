@@ -3,72 +3,52 @@ var fs = require("fs");
 var path = require("path");
 var os = require("os");
 var jobStatus = {
-    'B' : 'Begun', 
-    'E' : 'Exiting', 
-    'X' : 'Expired',  
-    'F' : 'Finished',
-    'H' : 'Held',  
-    'M' : 'Moved', 
-    'Q' : 'Queued', 
-    'R' : 'Running', 
-    'S' : 'Suspended', 
-    'U' : 'UserSuspended', 
-    'T' : 'Moving', 
-    'W' : 'Waiting'
+    'PD' : 'Pending', 
+    'R'  : 'Running'
 };
 
 // General command dictionnary keeping track of implemented features
 var cmdDict = {
-    "alter"    :   ["qalter"],
-    "queue"    :   ["qstat", "-Q"],
-    "queues"   :   ["qstat", "-Q"],
-    "job"      :   ["qstat", "-x", "-f"],
-    "jobs"     :   ["qstat", "-x", "-w"],
-    "jobsAlt"  :   ["qstat", "-x", "-w", "-s", "-1"],
-    "node"     :   ["pbsnodes"],
-    "nodes"    :   ["pbsnodes", "-a"],
-    "move"     :   ["qmove"],
-    "submit"   :   ["qsub"],
-    "setting"  :   ["qmgr", "-c"],
-    "settings" :   ["qmgr", "-c","'p s'"]
+    "partitions"    :   ["scontrol", "show", "partition"],
+    "queue"         :   ["squeue", "--format=%all", "-p"],
+    "queues"        :   ["squeue", "--format=%all"],
+    "nodes"         :   ["scontrol", "show", "nodes"]
     };
 
-var nodeControlCmd = {
-    'clear'     :  ["-c"],
-    'offline'   :  ["-o"],
-    'reset'     :  ["-r"]
+
+var sActions = {
+    srun    :   "forced to run",
+    srerun  :   "successfully requeued",
+    sdel    :   "successfully cancelled",
+    shold   :   "successfully put on hold",
+    srls    :   "successfully released",
 };
 
-var qActions = {
-    qrun    :   "forced to run",
-    qrerun  :   "successfully requeued",
-    qdel    :   "successfully cancelled",
-    qhold   :   "successfully put on hold",
-    qrls    :   "successfully released",
-};
+var paramRegex = RegExp(/([^=\s]+)\=(.+?)(?:(?=\s+[a-zA-Z]+\=))/,'gm');
+var slurmSep = '|';
 
 // Helper function to return an array with [full path of exec, arguments] from a command of the cmdDict
 function cmdBuilder(binPath, cmdDictElement){
     return [path.join(binPath, cmdDictElement[0])].concat(cmdDictElement.slice(1,cmdDictElement.length));
 }
 
-function getMountedPath(pbs_config, remotePath){
+function getMountedPath(slurm_config, remotePath){
     return hpc.getMountedPath.apply(null, arguments);
 }
 
-function getOriginalPath(pbs_config, remotePath){
+function getOriginalPath(slurm_config, remotePath){
     return hpc.getOriginalPath.apply(null, arguments);
 }
 
-function createJobWorkDir(pbs_config, folder, callback){
+function createJobWorkDir(slurm_config, folder, callback){
     return hpc.createJobWorkDir.apply(null, arguments);
 }
 
 // Return the Remote Working Directory or its locally mounted Path
-function getJobWorkDir(pbs_config, jobId, callback){
+function getJobWorkDir(slurm_config, jobId, callback){
     
     // Check if the user is the owner of the job
-    qstat(pbs_config, jobId, function(err,data){
+    qstat(slurm_config, jobId, function(err,data){
         if(err){
             return callback(err);
         }
@@ -79,194 +59,38 @@ function getJobWorkDir(pbs_config, jobId, callback){
             return callback(new Error("Working directory not found"));
         }
         
-        if (pbs_config.useSharedDir){
-            return callback(null, getMountedPath(pbs_config, jobWorkingDir));
+        if (slurm_config.useSharedDir){
+            return callback(null, getMountedPath(slurm_config, jobWorkingDir));
         }else{
             return callback(null, jobWorkingDir);
         }
     });
 }
 
-//Takes an array to convert to JSON tree for queues and server properties
-function jsonifyQmgr(output){
-    var results=[];
-    // JSON output will be indexed by queues and server
-    results.queue=[];
-    results.queues=[];
-    results.server={};
-    //Loop on properties
+function jsonifyParams(output){
+    var results = {};
+    var param;
+    while ((param = paramRegex.exec(output)) !== null) {
+        results[param[1]]=param[2];
+    }
+    return results;
+}
+
+function jsonifyParsable(output){
+    var results = [];
+    
+    var header = output.shift().split(slurmSep);
     for (var i = 0; i < output.length; i++) {
-        if (output[i].indexOf('=') !== -1){
-            // Split key and value to 0 and 1
-            var data = output[i].split('=');
-            // Split at each space to create a node in JSON
-            var keys = data[0].trim().split(' ');
-            var value = data[1].trim();
-            //TODO: do this more effentiely
-            switch (keys[1].trim()){
-                case 'server':
-                    results.server[keys[2].trim()] = value;
-                    break;
-                case 'queue':
-                    // Order array under the queue name to easily store properties
-                    results.queue[keys[2].trim()] = results.queue[keys[2].trim()] || {}; // initializes array if it is undefined
-                    results.queue[keys[2].trim()][keys[3].trim()] = value;
-                    break;
-            }
-        }
-    }
-    // Loop on the sub-array 'queue' to reorganise it more JSON-like
-    for (var x in results.queue){
-        // Add the name of the queue
-        results.queue[x].name = x;
-        results.queues.push(results.queue[x]);
-    }
-    // Clear the sub-array
-    delete results.queue;
-    
-    return results;
-}
-
-function jsonifyPBSnodes(output){
-    var results={};
-    // Store node name
-    results.name = output[0];
-    // Look for properties
-    for (var i = 1; i < output.length; i++) {
-        if (output[i].indexOf('=')!== -1){
-           // Split key and value to 0 and 1
-            var data = output[i].split('=');
-            results[data.shift().trim()] = data.toString().trim();
-        }
-    }
-    // Reorganise jobs into an array with jobId & jobProcs
-    if (results.jobs){
-        var runningJobs = [];
-        // Split by job
-        var jobData = results.jobs.trim().split(/,/);
-        // Parse jobs
-        for (var j = 0; j < jobData.length; j++) {
-            var jobProcess = jobData[j].trim().split(/\//);
-            var jobId = jobProcess[0];
-            var jobProcs = jobProcess[1];
-            // Index by jobId to increment procs
-            if(runningJobs[jobId]){
-                runningJobs[jobId].jobProcs.push(jobProcs);
-            }else{
-                runningJobs[jobId] = {
-                    jobId       :   jobId,
-                    jobProcs    :   [jobProcess[1]],
-                };
-            }
-        }
-        // Reorganise into JSON
-        var result = [];
-        for (var job in runningJobs){
-            result.push(runningJobs[job]);
-        }
-        results.jobs = result;
-    }
-    return results;
-}
-
-function jsonifyQstat(output){
-    var results = {
-        "jobId"     :   output[0],
-        "name"      :   output[1],
-        "user"      :   output[2],
-        "time"      :   output[3],
-        "status"    :   jobStatus[output[4]],
-        "queue"     :   output[5],
-    };
-    return results;
-}
-
-function jsonifyQstatAlt(output){
-    var results = {
-        "jobId"     :   output[0],
-        "user"      :   output[1],
-        "queue"     :   output[2],
-        "name"      :   output[3],
-        "sessionID" :   output[4],
-        "NDS"       :   output[5],
-        "TSK"       :   output[6],
-        "req_memory":   output[7],
-        "req_time"  :   output[8],
-        "status"    :   output[9],
-        "time"      :   output[10],
-        "comment"   :   output[11],
-    };
-    return results;
-}
-
-function jsonifyQueues(output){
-    var results = {
-        "name"        :   output[0],
-        "maxJobs"     :   output[1],
-        "totalJobs"   :   output[2],
-        "enabled"     :   (output[3] === 'yes' ? true : false),
-        "started"     :   (output[4] === 'yes' ? true : false),
-        "queued"      :   output[5],
-        "running"     :   output[6],
-        "held"        :   output[7],
-        "waiting"     :   output[8],
-        "moving"      :   output[9],
-        "exiting"     :   output[10],
-        "type"        :   (output[11] === 'Exec' ? 'Execution' : 'Routing'),
-        "completed"   :   output[12]
-    };
-    return results;
-}
-
-function jsonifyQstatFull(output, pbs_config){
-    //Join truncated lines and split
-    output = output.trim().replace(/\n\t/g,"").split(os.EOL);
-    
-    var results={};
-    // First line is Job Id
-    results.jobId = output[0].split(':')[1].trim();
-    
-    // Look for properties
-    for (var i = 1; i < output.length; i++) {
-        if (output[i].indexOf(' = ')!== -1){
-            // Split key and value to 0 and 1
-            var data = output[i].split(' = ');
-            results[data[0].trim()] = data[1].trim();
-        }
-    }
-    
-    // Develop job status to be consistent
-    results.job_state = jobStatus[results.job_state];
-    
-    // Reorganise variable list into a sub-array
-    if (results.Variable_List){
-        // First split by commas to separate variables
-        var variables = results.Variable_List.trim().split(/[,]+/);
-        // Clear
-        results.Variable_List = {};
-        // And split by the first = equal sign
-        for (var k = 0; k < variables.length; k++) {
-            // And split by the first = equal sign
-            variables[k] = variables[k].split('=');
-            results.Variable_List[variables[k][0]] = variables[k][1];
-        }
-    }
-    // Transform available paths
-    if (pbs_config.useSharedDir){
-        results.sharedPath = {};
-        if(results.Variable_List.PBS_O_WORKDIR){
-            results.sharedPath.workdir      = getMountedPath(pbs_config, results.Variable_List.PBS_O_WORKDIR);
-        }
-        //TODO: running jobs have their stdout and stderr in the staging directory: have an option for sandbox
-        var stdPath = ['Error_Path', 'Output_Path'];
-        stdPath.forEach(function(_path){
-            if(results[_path]){
-                if(results[_path].indexOf(':') > -1){
-                    results[_path] = results[_path].split(':')[1];
+        if(output[i] && output[i].length>0){
+            var result = {};
+            var entry = output[i].split(slurmSep);
+            for (var j = 0; j < entry.length; j++) {
+                if(header[j] && header[j].length >0){
+                    result[header[j]]=entry[j];
                 }
-                results.sharedPath[_path] = getMountedPath(pbs_config, results[_path]);
             }
-        });
+            results.push(result);
+        }
     }
     return results;
 }
@@ -307,11 +131,16 @@ function jsonifyQstatFull(output, pbs_config){
     localPath   :   'path/to/save/script'
     callback    :   callback(err,scriptFullPath)
 }*/
-// TODO: Consider piping the commands to qsub instead of writing script
-function qscript(jobArgs, localPath, callback){
-    // General PBS command inside script
-    var PBScommand = "#PBS ";
-    var toWrite = "# Autogenerated script";
+function sscript(jobArgs, localPath, callback){
+    // General SLURM command inside script
+    var SLURMcommand = "#SBATCH ";
+    var toWrite = "#!";
+        // Job Shell: optional, default to bash
+    if (jobArgs.shell !== undefined && jobArgs.shell !== ''){
+        toWrite += jobArgs.shell;
+    }else{
+        toWrite += "/bin/bash";
+    }
     
     var jobName = jobArgs.jobName;
     
@@ -323,46 +152,41 @@ function qscript(jobArgs, localPath, callback){
     // Generate the script path
     var scriptFullPath = path.join(localPath,jobName);
     
-    // Job Shell: optional, default to bash
-    if (jobArgs.shell !== undefined && jobArgs.shell !== ''){
-        toWrite += os.EOL + PBScommand + "-S " + jobArgs.shell;
-    }else{
-        toWrite += os.EOL + PBScommand + "-S /bin/bash";
-    }
+
     // Job Name
-    toWrite += os.EOL + PBScommand + "-N " + jobName;
+    toWrite += os.EOL + SLURMcommand + "-N " + jobName;
     
     // Stdout: optional
     if (jobArgs.stdout !== undefined && jobArgs.stdout !== ''){
-        toWrite += os.EOL + PBScommand + "-o " + jobArgs.stdout;
+        toWrite += os.EOL + SLURMcommand + "-o " + jobArgs.stdout;
     }
     // Stderr: optional
     if (jobArgs.stderr !== undefined && jobArgs.stderr !== ''){
-        toWrite += os.EOL + PBScommand + "-e " + jobArgs.stderr;
+        toWrite += os.EOL + SLURMcommand + "-e " + jobArgs.stderr;
     }
     
     // Resources
-    toWrite += os.EOL + PBScommand + parseResources(jobArgs.resources);
+    toWrite += os.EOL + SLURMcommand + parseResources(jobArgs.resources);
     
     // Custom Resources
     if(jobArgs.custom){
         for(var customRes in jobArgs.custom){
-            toWrite += os.EOL + PBScommand + "-l " + customRes + "=" + jobArgs.custom[customRes];
+            toWrite += os.EOL + SLURMcommand + "-l " + customRes + "=" + jobArgs.custom[customRes];
         }
     }
     // Walltime: optional
     if (jobArgs.walltime !== undefined && jobArgs.walltime !== ''){
-        toWrite += os.EOL + PBScommand + "-l " + jobArgs.walltime;
+        toWrite += os.EOL + SLURMcommand + "-l " + jobArgs.walltime;
     }
     
     // Queue: none fallback to default
     if (jobArgs.queue !== undefined && jobArgs.queue !== ''){
-        toWrite += os.EOL +  PBScommand + "-q " + jobArgs.queue;
+        toWrite += os.EOL +  SLURMcommand + "-q " + jobArgs.queue;
     }
     
     // Job exclusive
     if (jobArgs.exclusive){
-        toWrite += os.EOL + PBScommand + "-n";
+        toWrite += os.EOL + SLURMcommand + "-n";
     }
     
     
@@ -370,14 +194,14 @@ function qscript(jobArgs, localPath, callback){
     if(jobArgs.env){
         for(var _env in jobArgs.env){
             //Quote to avoid breaks
-            toWrite += os.EOL + PBScommand + '-v "' + _env + '=' + jobArgs.env[_env] + '", ';
+            toWrite += os.EOL + SLURMcommand + '-v "' + _env + '=' + jobArgs.env[_env] + '", ';
         }
     }
     
     // Send mail
     if (jobArgs.mail){
     
-        toWrite += os.EOL + PBScommand + "-M " + jobArgs.mail;
+        toWrite += os.EOL + SLURMcommand + "-M " + jobArgs.mail;
     
         // Test when to send a mail
         var mailArgs;
@@ -390,7 +214,7 @@ function qscript(jobArgs, localPath, callback){
         }
         
         if (mailArgs){
-            toWrite += os.EOL + PBScommand + mailArgs;
+            toWrite += os.EOL + SLURMcommand + mailArgs;
         }
     }
     
@@ -418,7 +242,7 @@ function qscript(jobArgs, localPath, callback){
 }
 
 // Return the list of nodes
-function qnodes(pbs_config, controlCmd, nodeName, callback){
+function snodes(slurm_config, controlCmd, nodeName, callback){
     // controlCmd & nodeName are optionnal so we test on the number of args
     var args = [];
     for (var i = 0; i < arguments.length; i++) {
@@ -426,7 +250,7 @@ function qnodes(pbs_config, controlCmd, nodeName, callback){
     }
 
     // first argument is the config file
-    pbs_config = args.shift();
+    slurm_config = args.shift();
 
     // last argument is the callback function
     callback = args.pop();
@@ -435,28 +259,20 @@ function qnodes(pbs_config, controlCmd, nodeName, callback){
     var parseOutput = true;
     
     // Command, Nodename or default
-    switch (args.length){
-        case 2:
-            // Node control
-            nodeName = args.pop();
-            controlCmd = args.pop();
-            remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.node);
-            remote_cmd = remote_cmd.concat(nodeControlCmd[controlCmd]);
-            remote_cmd.push(nodeName);
-            parseOutput = false;
-            break;
-        case 1:
-            // Node specific info
-            nodeName = args.pop();
-            remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.node);
-            remote_cmd.push(nodeName);
-            break;
-        default:
-            // Default
-            remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.nodes);
+    if (args.length === 2){
+        // Node specific info
+        nodeName = args.pop();
+        remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.nodes);
+        remote_cmd.push(nodeName);
+    }else{
+        // Default
+        remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.nodes);
+        if(args.length === 1){
+            remote_cmd.push(nodeName);    
+        }
     }
     
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
+    var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
     
     // Transmit the error if any
     if (output.stderr){
@@ -464,18 +280,12 @@ function qnodes(pbs_config, controlCmd, nodeName, callback){
     }
     
     if (parseOutput){    
-        //Detect empty values
-        output = output.stdout.replace(/=,/g,"=null,");
-        //Separate each node
-        output = output.split(os.EOL + os.EOL);
+        output = output.stdout.split(os.EOL+os.EOL);
+        
         var nodes = [];
-        //Loop on each node
-        for (var j = 0; j < output.length; j++) {
-            if (output[j].length>1){
-                //Split at lign breaks
-                output[j]  = output[j].trim().split(/[\n;]+/);
-                nodes.push(jsonifyPBSnodes(output[j]));
-            }
+        
+        for (var j = 0; j < output.length-1; j++) {
+            nodes.push(jsonifyParams(output[j]));
         }
         return callback(null, nodes);
     }else{
@@ -485,67 +295,86 @@ function qnodes(pbs_config, controlCmd, nodeName, callback){
     }
 }
 
-// Return list of queues
-function qqueues(pbs_config, queueName, callback){
-    // JobId is optionnal so we test on the number of args
+// Return list of partitions
+function spartitions(slurm_config, partitionName, callback){
     var args = [];
     for (var i = 0; i < arguments.length; i++) {
         args.push(arguments[i]);
     }
     
     // first argument is the config file
-    pbs_config = args.shift();
+    slurm_config = args.shift();
 
     // last argument is the callback function
     callback = args.pop();
     
     var remote_cmd;
     
-    // Info on a specific job
+    remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.partitions);
+    // Info on a specific partition
     if (args.length == 1){
-        queueName = args.pop();
-        remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.queue);
-        remote_cmd.push(queueName);
-    }else{
-        remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.queues);
+        partitionName = args.pop();
+        remote_cmd.push(partitionName);
     }
     
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
+    var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
     // Transmit the error if any
     if (output.stderr){
         return callback(new Error(output.stderr));
     }
     
-    output = output.stdout.split(os.EOL);
-    // First 2 lines are not relevant
-    var queues = [];
-    for (var j = 2; j < output.length-1; j++) {
-        output[j]  = output[j].trim().split(/[\s]+/);
-        queues.push(jsonifyQueues(output[j]));
+    output = output.stdout.split(os.EOL+os.EOL);
+    
+    var partitions = [];
+    
+    for (var j = 0; j < output.length-1; j++) {
+        partitions.push(jsonifyParams(output[j]));
     }
-    return callback(null, queues);
+    return callback(null, partitions);
     
 }
     
-// Move the job to a different queue
-function qmove(pbs_config, jobId, destination, callback){
+// Return list of jobs
+function squeue(slurm_config, partitionName, callback){
+    var args = [];
+    for (var i = 0; i < arguments.length; i++) {
+        args.push(arguments[i]);
+    }
     
-    var remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.move);
-    remote_cmd.push(destination);
-    remote_cmd.push(jobId);
+    // first argument is the config file
+    slurm_config = args.shift();
+
+    // last argument is the callback function
+    callback = args.pop();
     
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
+    var remote_cmd;
     
+    // Info on a specific partition
+    if (args.length == 1){
+        partitionName = args.pop();
+        remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.queue);
+        remote_cmd.push(partitionName);
+    }else{
+        remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.queues);
+    }
+    
+    var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
+
+    // Transmit the error if any
     if (output.stderr){
         return callback(new Error(output.stderr));
     }
-    // Job deleted returns
-    return callback(null, {"message" : 'Job ' + jobId + ' successfully moved to queue ' + destination});
+    
+    var jobs  = jsonifyParsable(output.stdout.split(os.EOL));
+    
+    return callback(null, jobs);
+    
 }
 
+
 // Return list of running jobs
-function qstat(pbs_config, jobId, callback){
+function qstat(slurm_config, jobId, callback){
     // JobId is optionnal so we test on the number of args
     var args = [];
     // Boolean to indicate if we want the job list
@@ -556,7 +385,7 @@ function qstat(pbs_config, jobId, callback){
     }
 
     // first argument is the config file
-    pbs_config = args.shift();
+    slurm_config = args.shift();
 
     // last argument is the callback function
     callback = args.pop();
@@ -567,7 +396,7 @@ function qstat(pbs_config, jobId, callback){
     if (args.length == 1){
         jobId = args.pop();
         // Qstat -f
-        remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.job);
+        remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.job);
         // Qstat -f on all jobs
         if(jobId !== 'all'){
             // Call by short job# to avoid errors
@@ -578,13 +407,13 @@ function qstat(pbs_config, jobId, callback){
             jobList = false;
         }
     }else{
-        if(pbs_config.useAlternate){
-            remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.jobsAlt);
+        if(slurm_config.useAlternate){
+            remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.jobsAlt);
         }else{
-            remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.jobs);
+            remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.jobs);
         }
     }
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
+    var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
     
     // Transmit the error if any
     if (output.stderr){
@@ -602,12 +431,12 @@ function qstat(pbs_config, jobId, callback){
         if(jobId === 'all'){
             output = output.stdout.trim().split(os.EOL+os.EOL);
             for (var m = 0; m < output.length; m++) {
-                jobs.push(jsonifyQstatFull(output[m], pbs_config));
+                jobs.push(jsonifyQstatFull(output[m], slurm_config));
             }
         }else{
             output = output.stdout.split(os.EOL);
             // Use the alternative format
-            if(pbs_config.useAlternate){
+            if(slurm_config.useAlternate){
                 // First 5 lines are not relevant
                 for (var j = 5; j < output.length-1; j++) {
                     // First space can be truncated due to long hostnames, changing to double space
@@ -630,75 +459,36 @@ function qstat(pbs_config, jobId, callback){
         return callback(null, jobs);
         
     }else{
-        return callback(null, jsonifyQstatFull(output.stdout, pbs_config));
+        return callback(null, jsonifyQstatFull(output.stdout, slurm_config));
     }
-}
-
-// Interface for qmgr
-// For now only display server info
-function qmgr(pbs_config, qmgrCmd, callback){
-    // qmgrCmd is optionnal so we test on the number of args
-    var args = [];
-    for (var i = 0; i < arguments.length; i++) {
-        args.push(arguments[i]);
-    }
-
-    // first argument is the config file
-    pbs_config = args.shift();
-
-    // last argument is the callback function
-    callback = args.pop();
-    
-    var remote_cmd = pbs_config.binariesDir;
-    if (args.length === 0){
-        // Default print everything
-        remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.settings);
-    }else{
-        // TODO : handles complex qmgr commands
-        remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.setting);
-        remote_cmd.push(args.pop());
-        return callback(new Error('not yet implemented'));
-    }
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
-    
-    // Transmit the error if any
-    if (output.stderr){
-        return callback(new Error(output.stderr));
-    }
-    
-    output = output.stdout.split(os.EOL);
-    var qmgrInfo = jsonifyQmgr(output);
-    
-    return callback(null, qmgrInfo);
 }
 
 
 // Interface for qsub
 // Submit a script by its absolute path
-// qsub(
+// sbatch(
 /*    
-        pbs_config      :   config,
-        qsubArgs        :   array of required files to send to the server with the script in 0,
+        slurm_config      :   config,
+        sbatchArgs        :   array of required files to send to the server with the script in 0,
         jobWorkingDir   :   working directory,
         callack(message, jobId, jobWorkingDir)
 }
 */
-function qsub(pbs_config, qsubArgs, jobWorkingDir, callback){
-    var remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.submit);
+function sbatch(slurm_config, qsubArgs, jobWorkingDir, callback){
+    var remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.submit);
     
     if(qsubArgs.length < 1) {
         return callback(new Error('Please submit the script to run'));  
     }
     
     // Get mounted working directory if available else return null
-    var mountedPath = getMountedPath(pbs_config, jobWorkingDir);
+    var mountedPath = getMountedPath(slurm_config, jobWorkingDir);
     // Send files by the copy command defined
     for (var i = 0; i < qsubArgs.length; i++){
         
         // Copy only different files
-        // if(path.normalize(qsubArgs[i]) !== path.join(jobWorkingDir, path.basename(qsubArgs[i]))){
         if(!path.normalize(qsubArgs[i]).startsWith(jobWorkingDir) && (mountedPath && !path.normalize(qsubArgs[i]).startsWith(mountedPath))){
-            var copyCmd = hpc.spawn([qsubArgs[i],jobWorkingDir],"copy",true,pbs_config);
+            var copyCmd = hpc.spawn([qsubArgs[i],jobWorkingDir],"copy",true,slurm_config);
             if (copyCmd.stderr){
                 return callback(new Error(copyCmd.stderr.replace(/\n/g,"")));
             }
@@ -713,7 +503,7 @@ function qsub(pbs_config, qsubArgs, jobWorkingDir, callback){
     remote_cmd = ["cd", jobWorkingDir, "&&"].concat(remote_cmd);
     
     // Submit
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
+    var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
     
     // Transmit the error if any
     if (output.stderr){
@@ -727,56 +517,15 @@ function qsub(pbs_config, qsubArgs, jobWorkingDir, callback){
         });
 }
 
-// Interface for qalter
-// Modify job parameters inline
-// qalter(
-/*    
-        pbs_config      :   config,
-        jobId           :   jobId,
-        jobSettings     :  {
-            jobName     :   string
-            priority    :   -1024 < n < 1023
-        },
-        callack(err, success)
-}
-*/
-function qalter(pbs_config, jobId, jobSettings, callback){
-    var remote_cmd = cmdBuilder(pbs_config.binariesDir, cmdDict.alter);
-    
-    // Job name
-    if(jobSettings.jobName){
-        remote_cmd.push('-N');
-        remote_cmd.push(jobSettings.jobName);
-    }
-    // Priority
-    if(jobSettings.priority){
-        // Parse number
-        jobSettings.priority = Math.max(Math.min(Number(jobSettings.priority), 1023), -1024);
-        remote_cmd.push('-p');
-        remote_cmd.push(jobSettings.priority);
-    }
-    remote_cmd.push(jobId);
-    
-    // Submit
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
-    
-    // Transmit the error if any
-    if (output.stderr){
-        return callback(new Error(output.stderr.replace(/\n/g,"")));
-    }
-    
-    return callback(null, 'Job ' + jobId + ' successfully altered');
-}
-
 // Interface to retrieve the files from a job
 // Takes the jobId
 /* Return {
     callack(message)
 }*/
 
-function qfind(pbs_config, jobId, callback){
+function sfind(slurm_config, jobId, callback){
     // Check if the user is the owner of the job
-    getJobWorkDir(pbs_config, jobId, function(err, jobWorkingDir){
+    getJobWorkDir(slurm_config, jobId, function(err, jobWorkingDir){
         if(err){
             return callback(err);
         }
@@ -786,7 +535,7 @@ function qfind(pbs_config, jobId, callback){
         var remote_cmd = ["find", jobWorkingDir,"-type f", "&& find", jobWorkingDir, "-type d"];
         
         // List the content of the working dir
-        var output = hpc.spawn(remote_cmd,"shell",pbs_config.useSharedDir,pbs_config);
+        var output = hpc.spawn(remote_cmd,"shell",slurm_config.useSharedDir,slurm_config);
         
         // Transmit the error if any
         if (output.stderr){
@@ -821,10 +570,10 @@ function qfind(pbs_config, jobId, callback){
 }
 
 // Retrieve files inside a working directory of a job from a fileList with remote or locally mounted paths
-function qretrieve(pbs_config, jobId, fileList, localDir, callback){
+function sretrieve(slurm_config, jobId, fileList, localDir, callback){
     
     // Check if the user is the owner of the job
-    getJobWorkDir(pbs_config, jobId, function(err, jobWorkingDir){
+    getJobWorkDir(slurm_config, jobId, function(err, jobWorkingDir){
         if(err){
             return callback(err);
         }
@@ -841,7 +590,7 @@ function qretrieve(pbs_config, jobId, fileList, localDir, callback){
             
             // Retrieve the file
             // TODO: treat individual error on each file
-            var copyCmd = hpc.spawn([filePath,localDir],"copy",false,pbs_config);
+            var copyCmd = hpc.spawn([filePath,localDir],"copy",false,slurm_config);
             if (copyCmd.stderr){
                 return callback(new Error(copyCmd.stderr.replace(/\n/g,"")));
             }
@@ -896,16 +645,14 @@ function parseResources(resources){
 
 // Main functions
 var modules = {
-    qnodes              : qnodes,
-    qstat               : qstat,
-    qqueues             : qqueues,
-    qmove               : qmove,
-    qmgr                : qmgr,
-    qsub                : qsub,
-    qalter              : qalter,
-    qscript             : qscript,
-    qretrieve           : qretrieve,
-    qfind               : qfind,
+    snodes              : snodes,
+    squeue               : squeue,
+    spartitions             : spartitions,
+    sbatch                : sbatch,
+    sscript             : sscript,
+    sretrieve           : sretrieve,
+    sfind               : sfind,
+    sscript             : sscript,
     createJobWorkDir    : createJobWorkDir,
     getJobWorkDir       : getJobWorkDir,
     getMountedPath      : getMountedPath,
@@ -913,11 +660,11 @@ var modules = {
 };
 
 /** Common interface for simple functions only taking a jobId to control a job**/
-function qFn(action, msg, pbs_config, jobId, callback){
-    var remote_cmd = cmdBuilder(pbs_config.binariesDir, [action]);
+function sFn(action, msg, slurm_config, jobId, callback){
+    var remote_cmd = cmdBuilder(slurm_config.binariesDir, [action]);
     remote_cmd.push(jobId);
     
-    var output = hpc.spawn(remote_cmd,"shell",null,pbs_config);
+    var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
     
     if (output.stderr){
         return callback(new Error(output.stderr));
@@ -927,20 +674,20 @@ function qFn(action, msg, pbs_config, jobId, callback){
 }
 
 /** Declare simple wrapper functions
- * qdel     :       Delete the specified job Id and return the message and the status code
- * qhold   :
- * qrls     :
+ * sdel     :       Delete the specified job Id and return the message and the status code
+ * shold   :
+ * srls     :
  * **/
 var declareFn = function(_f){
     modules[fn] = function(){
         var args = Array.prototype.slice.call(arguments);
-        args.unshift(qActions[_f]);
+        args.unshift(sActions[_f]);
         args.unshift(_f);
-        return qFn.apply(this, args);
+        return sFn.apply(this, args);
     };
 };
 
-for(var fn in qActions){
+for(var fn in sActions){
     declareFn(fn);
 }
 
