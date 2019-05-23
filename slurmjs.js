@@ -13,15 +13,15 @@ var cmdDict = {
     "queue"         :   ["squeue", "--format=%all", "-p"],
     "queues"        :   ["squeue", "--format=%all"],
     "nodes"         :   ["scontrol", "show", "nodes"]
-    };
+};
 
 
 var sActions = {
-    srun    :   "forced to run",
-    srerun  :   "successfully requeued",
-    sdel    :   "successfully cancelled",
-    shold   :   "successfully put on hold",
-    srls    :   "successfully released",
+    // srun    :   "forced to run",
+    // srerun  :   "successfully requeued",
+    scancel    :   "successfully cancelled",
+    // shold   :   "successfully put on hold",
+    // srls    :   "successfully released",
 };
 
 var paramRegex = RegExp(/([^=\s]+)\=(.+?)(?:(?=\s+[a-zA-Z]+\=))/,'gm');
@@ -351,7 +351,7 @@ function squeue(slurm_config, partitionName, callback){
     var remote_cmd;
     
     // Info on a specific partition
-    if (args.length == 1){
+    if (args.length == 1 && partitionName !== 'all'){
         partitionName = args.pop();
         remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.queue);
         remote_cmd.push(partitionName);
@@ -652,7 +652,6 @@ var modules = {
     sscript             : sscript,
     sretrieve           : sretrieve,
     sfind               : sfind,
-    sscript             : sscript,
     createJobWorkDir    : createJobWorkDir,
     getJobWorkDir       : getJobWorkDir,
     getMountedPath      : getMountedPath,
@@ -673,10 +672,7 @@ function sFn(action, msg, slurm_config, jobId, callback){
     return callback(null, {"message" : 'Job ' + jobId + ' ' + msg});
 }
 
-/** Declare simple wrapper functions
- * sdel     :       Delete the specified job Id and return the message and the status code
- * shold   :
- * srls     :
+/** Declare simple wrapper functions from sActions
  * **/
 var declareFn = function(_f){
     modules[fn] = function(){
