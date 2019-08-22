@@ -1,9 +1,9 @@
-var hpc = require("../hpc_exec_wrapper/exec.js");
 var fs = require("fs");
 var path = require("path");
 var os = require("os");
+var hpc = require(path.join(__dirname, "../hpc_exec_wrapperjs/exec.js"));
 var jobStatus = {
-    'PD' : 'Pending', 
+    'PD' : 'Pending',
     'R'  : 'Running'
 };
 
@@ -13,7 +13,7 @@ var cmdDict = {
     "queue"         :   ["squeue", "--format=%all", "-p"],
     "queues"        :   ["squeue", "--format=%all"],
     "nodes"         :   ["scontrol", "show", "nodes"]
-    };
+};
 
 
 var sActions = {
@@ -46,7 +46,7 @@ function createJobWorkDir(slurm_config, folder, callback){
 
 // Return the Remote Working Directory or its locally mounted Path
 function getJobWorkDir(slurm_config, jobId, callback){
-    
+
     // Check if the user is the owner of the job
     qstat(slurm_config, jobId, function(err,data){
         if(err){
@@ -58,7 +58,7 @@ function getJobWorkDir(slurm_config, jobId, callback){
         }catch(e){
             return callback(new Error("Working directory not found"));
         }
-        
+
         if (slurm_config.useSharedDir){
             return callback(null, getMountedPath(slurm_config, jobWorkingDir));
         }else{
@@ -78,7 +78,7 @@ function jsonifyParams(output){
 
 function jsonifyParsable(output){
     var results = [];
-    
+
     var header = output.shift().split(slurmSep);
     for (var i = 0; i < output.length; i++) {
         if(output[i] && output[i].length>0){
@@ -102,38 +102,29 @@ function jsonifyParsable(output){
 /* jobArgs = {
     shell           :   [String]      //  '/bin/bash'
     jobName         :   String      //  'XX'
-    resources      :    [{
-         chunk          :   [Int],
-         ncpus          :   [Int],
-         mpiprocs       :   [Int],
-         mem            :   [String],
-         host           :   [String],
-         arch           :   [String]
-       },{chunk},{...}],
-    custom          :   {
-        custom1     :   [Int],
-        custom2     :   [Int],
-        custom3     :   [Int]
-    }
-    walltime        :   [String]      //  'walltime=01:00:00'
-    workdir         :   String      //  '-d'
-    stdout          :   [String]      //  '-o'
-    stderr          :   [String[      //  '-e'
-    queue           :   String      //  'batch'
-    exclusive       :   Boolean     //  '-n'
-    mail            :   String      //  'myemail@mydomain.com'
-    mailAbort       :   Boolean     //  '-m a'
-    mailBegins      :   Boolean     //  '-m b'
-    mailTerminates  :   Boolean     //  '-m e'
-    commands        :   Array       //  'main commands to run'
-    env             :   Object      //  key/value pairs of environment variables
+    resources      :    {
+        cpus-per-task    :   [String],
+        tasks            :   [String],
+        mem              :   [String]
+      }}
+    walltime        :   [String]
+    stdout          :   [String]
+    stderr          :   [String[
+    queue           :   String
+    exclusive       :   Boolean
+    mail            :   String
+    mailAbort       :   Boolean
+    mailBegins      :   Boolean
+    mailTerminates  :   Boolean
+    commands        :   Array
+    env             :   Object
     },
     localPath   :   'path/to/save/script'
     callback    :   callback(err,scriptFullPath)
 }*/
 function sscript(jobArgs, localPath, callback){
     // General SLURM command inside script
-    var SLURMcommand = "#SBATCH ";
+    var SLURMCommand = "#SBATCH ";
     var toWrite = "#!";
         // Job Shell: optional, default to bash
     if (jobArgs.shell !== undefined && jobArgs.shell !== ''){
@@ -141,9 +132,9 @@ function sscript(jobArgs, localPath, callback){
     }else{
         toWrite += "/bin/bash";
     }
-    
+
     var jobName = jobArgs.jobName;
-    
+
     // The name has to be bash compatible: TODO expand to throw other erros
     if (jobName.search(/[^a-zA-Z0-9]/g) !== -1){
         return callback(new Error('Name cannot contain special characters'));
@@ -151,76 +142,79 @@ function sscript(jobArgs, localPath, callback){
 
     // Generate the script path
     var scriptFullPath = path.join(localPath,jobName);
-    
 
     // Job Name
-    toWrite += os.EOL + SLURMcommand + "-N " + jobName;
-    
+    toWrite += os.EOL + SLURMCommand + "--job-name=" + jobName;
+
     // Stdout: optional
     if (jobArgs.stdout !== undefined && jobArgs.stdout !== ''){
-        toWrite += os.EOL + SLURMcommand + "-o " + jobArgs.stdout;
+        toWrite += os.EOL + SLURMCommand + "--output=" + jobArgs.stdout;
     }
     // Stderr: optional
     if (jobArgs.stderr !== undefined && jobArgs.stderr !== ''){
-        toWrite += os.EOL + SLURMcommand + "-e " + jobArgs.stderr;
+        toWrite += os.EOL + SLURMCommand + "--error=" + jobArgs.stderr;
     }
-    
-    // Resources
-    toWrite += os.EOL + SLURMcommand + parseResources(jobArgs.resources);
-    
-    // Custom Resources
-    if(jobArgs.custom){
-        for(var customRes in jobArgs.custom){
-            toWrite += os.EOL + SLURMcommand + "-l " + customRes + "=" + jobArgs.custom[customRes];
+
+    // Resources : loop on object and pass as-is
+    for(var _res in jobArgs.resources){
+        if (jobArgs.resources[_res] !== undefined && jobArgs.resources[_res] !== ''){
+          toWrite += os.EOL + SLURMCommand + "--" + _res + "=" + jobArgs.resources[_res];
         }
     }
+
     // Walltime: optional
     if (jobArgs.walltime !== undefined && jobArgs.walltime !== ''){
-        toWrite += os.EOL + SLURMcommand + "-l " + jobArgs.walltime;
+        toWrite += os.EOL + SLURMCommand + "--time=" + jobArgs.walltime;
     }
-    
+
     // Queue: none fallback to default
     if (jobArgs.queue !== undefined && jobArgs.queue !== ''){
-        toWrite += os.EOL +  SLURMcommand + "-q " + jobArgs.queue;
+        toWrite += os.EOL +  SLURMCommand + "--partition=" + jobArgs.queue;
     }
-    
+
     // Job exclusive
     if (jobArgs.exclusive){
-        toWrite += os.EOL + SLURMcommand + "-n";
+        toWrite += os.EOL + SLURMCommand + "--exclusive";
     }
-    
-    
+
     // EnvironmentVariables
     if(jobArgs.env){
+        var jobEnv = [];
         for(var _env in jobArgs.env){
-            //Quote to avoid breaks
-            toWrite += os.EOL + SLURMcommand + '-v "' + _env + '=' + jobArgs.env[_env] + '", ';
+            if(_env === 'ALL'){
+              jobEnv.unshift("ALL");
+            }else{
+              jobEnv.push(_env + '=' + jobArgs.env[_env]);
+            }
         }
+        toWrite += os.EOL + SLURMCommand + '--export=' + jobEnv.join(',');
     }
-    
+
     // Send mail
     if (jobArgs.mail){
-    
-        toWrite += os.EOL + SLURMcommand + "-M " + jobArgs.mail;
-    
+
+        toWrite += os.EOL + SLURMCommand + "--mail-user=" + jobArgs.mail;
+
         // Test when to send a mail
-        var mailArgs;
-        if(jobArgs.mailAbort){mailArgs = '-m a';}
-        if(jobArgs.mailBegins){     
-          if (!mailArgs){mailArgs = '-m b';}else{mailArgs += 'b';}
+        var mailArgs = [];
+        if(jobArgs.mailAbort){
+          mailArgs.push("FAIL");
         }
-        if(jobArgs.mailTerminates){     
-          if (!mailArgs){mailArgs = '-m e';}else{mailArgs += 'e';}
+        if(jobArgs.mailBegins){
+          mailArgs.push("BEGIN");
         }
-        
-        if (mailArgs){
-            toWrite += os.EOL + SLURMcommand + mailArgs;
+        if(jobArgs.mailTerminates){
+          mailArgs.push("END");
+        }
+
+        if (mailArgs.length>0){
+            toWrite += os.EOL + SLURMCommand + '--mail-type=' + jobEnv.join(',');
         }
     }
-    
+
     // Write commands in plain shell including carriage returns
     toWrite += os.EOL + jobArgs.commands;
-    
+
     toWrite += os.EOL;
     // Write to script, delete file if exists
     fs.unlink(scriptFullPath, function(err){
@@ -232,7 +226,7 @@ function sscript(jobArgs, localPath, callback){
             if(err){
                 return callback(err);
             }
-    
+
             return callback(null, {
                 "message"   :   'Script for job ' + jobName + ' successfully created',
                 "path"      :   scriptFullPath
@@ -254,10 +248,10 @@ function snodes(slurm_config, controlCmd, nodeName, callback){
 
     // last argument is the callback function
     callback = args.pop();
-    
+
     var remote_cmd;
     var parseOutput = true;
-    
+
     // Command, Nodename or default
     if (args.length === 2){
         // Node specific info
@@ -268,28 +262,28 @@ function snodes(slurm_config, controlCmd, nodeName, callback){
         // Default
         remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.nodes);
         if(args.length === 1){
-            remote_cmd.push(nodeName);    
+            remote_cmd.push(nodeName);
         }
     }
-    
+
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
-    
+
     // Transmit the error if any
     if (output.stderr){
         return callback(new Error(output.stderr));
     }
-    
-    if (parseOutput){    
+
+    if (parseOutput){
         output = output.stdout.split(os.EOL+os.EOL);
-        
+
         var nodes = [];
-        
+
         for (var j = 0; j < output.length-1; j++) {
             nodes.push(jsonifyParams(output[j]));
         }
         return callback(null, nodes);
     }else{
-        return callback(null, { 
+        return callback(null, {
             "message"   : 'Node ' + nodeName + ' put in ' + controlCmd + ' state.',
         });
     }
@@ -301,55 +295,55 @@ function spartitions(slurm_config, partitionName, callback){
     for (var i = 0; i < arguments.length; i++) {
         args.push(arguments[i]);
     }
-    
+
     // first argument is the config file
     slurm_config = args.shift();
 
     // last argument is the callback function
     callback = args.pop();
-    
+
     var remote_cmd;
-    
+
     remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.partitions);
     // Info on a specific partition
     if (args.length == 1){
         partitionName = args.pop();
         remote_cmd.push(partitionName);
     }
-    
+
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
     // Transmit the error if any
     if (output.stderr){
         return callback(new Error(output.stderr));
     }
-    
+
     output = output.stdout.split(os.EOL+os.EOL);
-    
+
     var partitions = [];
-    
+
     for (var j = 0; j < output.length-1; j++) {
         partitions.push(jsonifyParams(output[j]));
     }
     return callback(null, partitions);
-    
+
 }
-    
+
 // Return list of jobs
 function squeue(slurm_config, partitionName, callback){
     var args = [];
     for (var i = 0; i < arguments.length; i++) {
         args.push(arguments[i]);
     }
-    
+
     // first argument is the config file
     slurm_config = args.shift();
 
     // last argument is the callback function
     callback = args.pop();
-    
+
     var remote_cmd;
-    
+
     // Info on a specific partition
     if (args.length == 1){
         partitionName = args.pop();
@@ -358,18 +352,18 @@ function squeue(slurm_config, partitionName, callback){
     }else{
         remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.queues);
     }
-    
+
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
     // Transmit the error if any
     if (output.stderr){
         return callback(new Error(output.stderr));
     }
-    
+
     var jobs  = jsonifyParsable(output.stdout.split(os.EOL));
-    
+
     return callback(null, jobs);
-    
+
 }
 
 
@@ -379,7 +373,7 @@ function qstat(slurm_config, jobId, callback){
     var args = [];
     // Boolean to indicate if we want the job list
     var jobList = true;
-    
+
     for (var i = 0; i < arguments.length; i++) {
         args.push(arguments[i]);
     }
@@ -389,9 +383,9 @@ function qstat(slurm_config, jobId, callback){
 
     // last argument is the callback function
     callback = args.pop();
-    
+
     var remote_cmd;
-    
+
     // Info on a specific job
     if (args.length == 1){
         jobId = args.pop();
@@ -414,18 +408,18 @@ function qstat(slurm_config, jobId, callback){
         }
     }
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
-    
+
     // Transmit the error if any
     if (output.stderr){
         // Treat stderr: 'Warning: Permanently added \'XXXX\' (ECDSA) to the list of known hosts.\r\n',
         return callback(new Error(output.stderr));
     }
-    
+
     // If no error but zero length, the user is has no job running or is not authorized
     if (output.stdout.length === 0){
         return callback(null,[]);
     }
-    
+
     if (jobList){
         var jobs = [];
         if(jobId === 'all'){
@@ -441,7 +435,7 @@ function qstat(slurm_config, jobId, callback){
                 for (var j = 5; j < output.length-1; j++) {
                     // First space can be truncated due to long hostnames, changing to double space
                     output[j] = output[j].replace(/^.*?\s/,function myFunction(jobname){return jobname + "  ";});
-    
+
                     // Give some space to the status
                     output[j] = output[j].replace(/\s[A-Z]\s/,function myFunction(status){return "  " + status + "  ";});
                     //Split by double-space
@@ -457,7 +451,7 @@ function qstat(slurm_config, jobId, callback){
             }
         }
         return callback(null, jobs);
-        
+
     }else{
         return callback(null, jsonifyQstatFull(output.stdout, slurm_config));
     }
@@ -467,7 +461,7 @@ function qstat(slurm_config, jobId, callback){
 // Interface for qsub
 // Submit a script by its absolute path
 // sbatch(
-/*    
+/*
         slurm_config      :   config,
         sbatchArgs        :   array of required files to send to the server with the script in 0,
         jobWorkingDir   :   working directory,
@@ -476,16 +470,16 @@ function qstat(slurm_config, jobId, callback){
 */
 function sbatch(slurm_config, qsubArgs, jobWorkingDir, callback){
     var remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.submit);
-    
+
     if(qsubArgs.length < 1) {
-        return callback(new Error('Please submit the script to run'));  
+        return callback(new Error('Please submit the script to run'));
     }
-    
+
     // Get mounted working directory if available else return null
     var mountedPath = getMountedPath(slurm_config, jobWorkingDir);
     // Send files by the copy command defined
     for (var i = 0; i < qsubArgs.length; i++){
-        
+
         // Copy only different files
         if(!path.normalize(qsubArgs[i]).startsWith(jobWorkingDir) && (mountedPath && !path.normalize(qsubArgs[i]).startsWith(mountedPath))){
             var copyCmd = hpc.spawn([qsubArgs[i],jobWorkingDir],"copy",true,slurm_config);
@@ -494,23 +488,23 @@ function sbatch(slurm_config, qsubArgs, jobWorkingDir, callback){
             }
         }
     }
-    
+
     // Add script: first element of qsubArgs
     var scriptName = path.basename(qsubArgs[0]);
     remote_cmd.push(scriptName);
-    
+
     // Change directory to working dir
     remote_cmd = ["cd", jobWorkingDir, "&&"].concat(remote_cmd);
-    
+
     // Submit
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
-    
+
     // Transmit the error if any
     if (output.stderr){
         return callback(new Error(output.stderr.replace(/\n/g,"")));
     }
     var jobId = output.stdout.replace(/\n/g,"");
-    return callback(null, { 
+    return callback(null, {
             "message"   : 'Job ' + jobId + ' submitted',
             "jobId"     : jobId,
             "path"      : jobWorkingDir
@@ -529,29 +523,29 @@ function sfind(slurm_config, jobId, callback){
         if(err){
             return callback(err);
         }
-        
+
         // Remote find command
         // TOOD: put in config file
         var remote_cmd = ["find", jobWorkingDir,"-type f", "&& find", jobWorkingDir, "-type d"];
-        
+
         // List the content of the working dir
         var output = hpc.spawn(remote_cmd,"shell",slurm_config.useSharedDir,slurm_config);
-        
+
         // Transmit the error if any
         if (output.stderr){
             return callback(new Error(output.stderr.replace(/\n/g,"")));
         }
         output = output.stdout.split(os.EOL);
-        
+
         var fileList        = [];
         fileList.files      = [];
         fileList.folders    = [];
         var files = true;
-        
+
         for (var i=0; i<output.length; i++){
             var filePath = output[i];
             if (filePath.length > 0){
-                
+
                 // When the cwd is returned, we have the folders
                 if (path.resolve(filePath) === path.resolve(jobWorkingDir)){
                     files = false;
@@ -564,30 +558,30 @@ function sfind(slurm_config, jobId, callback){
             }
         }
         return callback(null, fileList);
-        
+
     });
 
 }
 
 // Retrieve files inside a working directory of a job from a fileList with remote or locally mounted paths
 function sretrieve(slurm_config, jobId, fileList, localDir, callback){
-    
+
     // Check if the user is the owner of the job
     getJobWorkDir(slurm_config, jobId, function(err, jobWorkingDir){
         if(err){
             return callback(err);
         }
-        
-        
+
+
         for (var file in fileList){
             var filePath = fileList[file];
-            
+
             // Compare the file location with the working dir of the job
             // Filepath is already transformed to a mounted path if available
             if(path.relative(jobWorkingDir,filePath).indexOf('..') > -1){
                 return callback(new Error(path.basename(filePath) + ' is not related to the job ' + jobId));
             }
-            
+
             // Retrieve the file
             // TODO: treat individual error on each file
             var copyCmd = hpc.spawn([filePath,localDir],"copy",false,slurm_config);
@@ -600,47 +594,6 @@ function sretrieve(slurm_config, jobId, fileList, localDir, callback){
         });
     });
 
-}
-
-// Parse resources and return the qsub -l  statement
-//TODO: check against resources_available
-/**
- * {
-     chunk          :   [Int],
-     ncpus          :   [Int],
-     mpiprocs       :   [Int],
-     mem            :   [String],
-     host           :   [String],
-     arch           :   [String]
-   }
-**/
-function parseResources(resources){
-    // Resources
-    var select = "-l select=";
-    
-    if(!(Array.isArray(resources))){
-        resources = [resources];
-    }
-    
-    for(var statement in resources){
-        if(statement>0){
-            select+="+";
-        }
-        // Chunk: default to 1
-        if (resources[statement].chunk !== undefined && resources[statement].chunk !== ''){
-            select+=resources[statement].chunk;
-        }else{
-            select+="1";
-        }
-        
-        // Loop on the rest
-        for(var res in resources[statement]){
-            if (res !== "chunk" && resources[statement][res] !== undefined && resources[statement][res] !== ''){
-                select+=":" + res + "=" + resources[statement][res];
-            }
-        }
-    }
-    return select;
 }
 
 // Main functions
@@ -663,9 +616,9 @@ var modules = {
 function sFn(action, msg, slurm_config, jobId, callback){
     var remote_cmd = cmdBuilder(slurm_config.binariesDir, [action]);
     remote_cmd.push(jobId);
-    
+
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
-    
+
     if (output.stderr){
         return callback(new Error(output.stderr));
     }
