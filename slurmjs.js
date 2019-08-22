@@ -458,7 +458,7 @@ function qstat(slurm_config, jobId, callback){
 }
 
 
-// Interface for qsub
+// Interface for sbatch
 // Submit a script by its absolute path
 // sbatch(
 /*
@@ -468,29 +468,29 @@ function qstat(slurm_config, jobId, callback){
         callack(message, jobId, jobWorkingDir)
 }
 */
-function sbatch(slurm_config, qsubArgs, jobWorkingDir, callback){
+function sbatch(slurm_config, sbatchArgs, jobWorkingDir, callback){
     var remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.submit);
 
-    if(qsubArgs.length < 1) {
+    if(sbatchArgs.length < 1) {
         return callback(new Error('Please submit the script to run'));
     }
 
     // Get mounted working directory if available else return null
     var mountedPath = getMountedPath(slurm_config, jobWorkingDir);
     // Send files by the copy command defined
-    for (var i = 0; i < qsubArgs.length; i++){
+    for (var i = 0; i < sbatchArgs.length; i++){
 
         // Copy only different files
-        if(!path.normalize(qsubArgs[i]).startsWith(jobWorkingDir) && (mountedPath && !path.normalize(qsubArgs[i]).startsWith(mountedPath))){
-            var copyCmd = hpc.spawn([qsubArgs[i],jobWorkingDir],"copy",true,slurm_config);
+        if(!path.normalize(sbatchArgs[i]).startsWith(jobWorkingDir) && (mountedPath && !path.normalize(sbatchArgs[i]).startsWith(mountedPath))){
+            var copyCmd = hpc.spawn([sbatchArgs[i],jobWorkingDir],"copy",true,slurm_config);
             if (copyCmd.stderr){
                 return callback(new Error(copyCmd.stderr.replace(/\n/g,"")));
             }
         }
     }
 
-    // Add script: first element of qsubArgs
-    var scriptName = path.basename(qsubArgs[0]);
+    // Add script: first element of sbatchArgs
+    var scriptName = path.basename(sbatchArgs[0]);
     remote_cmd.push(scriptName);
 
     // Change directory to working dir
@@ -599,9 +599,9 @@ function sretrieve(slurm_config, jobId, fileList, localDir, callback){
 // Main functions
 var modules = {
     snodes              : snodes,
-    squeue               : squeue,
-    spartitions             : spartitions,
-    sbatch                : sbatch,
+    squeue              : squeue,
+    spartitions         : spartitions,
+    sbatch              : sbatch,
     sscript             : sscript,
     sretrieve           : sretrieve,
     sfind               : sfind,
