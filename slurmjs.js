@@ -12,7 +12,8 @@ var cmdDict = {
     "partitions"    :   ["scontrol", "show", "partition"],
     "queue"         :   ["squeue", "--format=%all", "-p"],
     "queues"        :   ["squeue", "--format=%all"],
-    "nodes"         :   ["scontrol", "show", "nodes"]
+    "nodes"         :   ["scontrol", "show", "nodes"],
+    "submit"        :   ["sbatch", "--parsable"]
 };
 
 
@@ -265,7 +266,7 @@ function snodes(slurm_config, controlCmd, nodeName, callback){
             remote_cmd.push(nodeName);
         }
     }
-
+    
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
     // Transmit the error if any
@@ -470,7 +471,6 @@ function qstat(slurm_config, jobId, callback){
 */
 function sbatch(slurm_config, sbatchArgs, jobWorkingDir, callback){
     var remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.submit);
-
     if(sbatchArgs.length < 1) {
         return callback(new Error('Please submit the script to run'));
     }
@@ -492,10 +492,10 @@ function sbatch(slurm_config, sbatchArgs, jobWorkingDir, callback){
     // Add script: first element of sbatchArgs
     var scriptName = path.basename(sbatchArgs[0]);
     remote_cmd.push(scriptName);
-
+    
     // Change directory to working dir
     remote_cmd = ["cd", jobWorkingDir, "&&"].concat(remote_cmd);
-
+    
     // Submit
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
