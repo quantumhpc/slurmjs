@@ -10,9 +10,10 @@ var jobStatus = {
 // General command dictionnary keeping track of implemented features
 var cmdDict = {
     "partitions"    :   ["scontrol", "show", "partition"],
-    "queue"         :   ["squeue", "--format=%all", "-p"],
-    "queues"        :   ["squeue", "--format=%all"],
+    "queue"         :   ["squeue", "--format=%all", "--sort=i", "-p"],
+    "queues"        :   ["squeue", "--format=%all", "--sort=i"],
     "nodes"         :   ["scontrol", "show", "nodes"],
+    "job"           :   ["scontrol", "show", "job", "-o"],
     "submit"        :   ["sbatch", "--parsable"]
 };
 
@@ -87,13 +88,37 @@ function jsonifyParsable(output){
             var entry = output[i].split(slurmSep);
             for (var j = 0; j < entry.length; j++) {
                 if(header[j] && header[j].length >0){
-                    result[header[j]]=entry[j];
+                    // Re-join feature separated with |
+                    if(header[j] === 'FEATURES'){
+                        var feat = entry[j];
+                        if(feat.indexOf('(')>-1){
+                            while(feat.slice(-1)!=')'){
+                                feat += slurmSep + entry.splice(j+1,1)[0];
+                            }
+                        }
+                        
+                    }else{
+                        result[header[j].toLowerCase()]=entry[j];
+                    }
                 }
             }
             results.push(result);
         }
     }
     return results;
+}
+
+function jsonifyOneLiner(output){
+    var result = {};
+
+    output = output.split(/\s+/);
+    for (var i = 0; i < output.length; i++) {
+        if(output[i] && output[i].length>0){
+            var entry = output[i].split('=');
+            result[entry[0].toLowerCase()]=entry[1];
+        }
+    }
+    return result;
 }
 
 
@@ -368,46 +393,18 @@ function squeue(slurm_config, partitionName, callback){
 }
 
 
-// Return list of running jobs
-function qstat(slurm_config, jobId, callback){
-    // JobId is optionnal so we test on the number of args
-    var args = [];
-    // Boolean to indicate if we want the job list
-    var jobList = true;
-
-    for (var i = 0; i < arguments.length; i++) {
-        args.push(arguments[i]);
-    }
-
-    // first argument is the config file
-    slurm_config = args.shift();
-
-    // last argument is the callback function
-    callback = args.pop();
-
+// Scontrol interface for jobs
+function sjob(slurm_config, jobId , callback){
     var remote_cmd;
 
-    // Info on a specific job
-    if (args.length == 1){
-        jobId = args.pop();
-        // Qstat -f
-        remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.job);
-        // Qstat -f on all jobs
-        if(jobId !== 'all'){
-            // Call by short job# to avoid errors
-            if(jobId.indexOf('.') > -1){
-                jobId = jobId.split('.')[0];
-            }
-            remote_cmd.push(jobId);
-            jobList = false;
-        }
-    }else{
-        if(slurm_config.useAlternate){
-            remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.jobsAlt);
-        }else{
-            remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.jobs);
-        }
+    remote_cmd = cmdBuilder(slurm_config.binariesDir, cmdDict.job);
+
+    // Call by short job# to avoid errors
+    if(jobId.indexOf('.') > -1){
+        jobId = jobId.split('.')[0];
     }
+    remote_cmd.push(jobId);
+    
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
     // Transmit the error if any
@@ -420,42 +417,8 @@ function qstat(slurm_config, jobId, callback){
     if (output.stdout.length === 0){
         return callback(null,[]);
     }
-
-    if (jobList){
-        var jobs = [];
-        if(jobId === 'all'){
-            output = output.stdout.trim().split(os.EOL+os.EOL);
-            for (var m = 0; m < output.length; m++) {
-                jobs.push(jsonifyQstatFull(output[m], slurm_config));
-            }
-        }else{
-            output = output.stdout.split(os.EOL);
-            // Use the alternative format
-            if(slurm_config.useAlternate){
-                // First 5 lines are not relevant
-                for (var j = 5; j < output.length-1; j++) {
-                    // First space can be truncated due to long hostnames, changing to double space
-                    output[j] = output[j].replace(/^.*?\s/,function myFunction(jobname){return jobname + "  ";});
-
-                    // Give some space to the status
-                    output[j] = output[j].replace(/\s[A-Z]\s/,function myFunction(status){return "  " + status + "  ";});
-                    //Split by double-space
-                    output[j] = output[j].trim().split(/[\s]{2,}/);
-                    jobs.push(jsonifyQstatAlt(output[j]));
-                }
-            }else{
-                // First 2 lines are not relevant
-                for (var k = 2; k < output.length-1; k++) {
-                    output[k]  = output[k].trim().split(/[\s]+/);
-                    jobs.push(jsonifyQstat(output[k]));
-                }
-            }
-        }
-        return callback(null, jobs);
-
-    }else{
-        return callback(null, jsonifyQstatFull(output.stdout, slurm_config));
-    }
+    var jobInfo  = jsonifyOneLiner(output.stdout);
+    return callback(null, jobInfo);
 }
 
 
@@ -500,7 +463,7 @@ function sbatch(slurm_config, sbatchArgs, jobWorkingDir, callback){
     var output = hpc.spawn(remote_cmd,"shell",null,slurm_config);
 
     // Transmit the error if any
-    if (output.stderr){
+    if (output.stderr && output.stdout.length == 0){
         return callback(new Error(output.stderr.replace(/\n/g,"")));
     }
     var jobId = output.stdout.replace(/\n/g,"");
@@ -605,6 +568,7 @@ var modules = {
     sscript             : sscript,
     sretrieve           : sretrieve,
     sfind               : sfind,
+    sjob                : sjob,
     createJobWorkDir    : createJobWorkDir,
     getJobWorkDir       : getJobWorkDir,
     getMountedPath      : getMountedPath,
